@@ -110,6 +110,7 @@ func New(ratelimiter workqueue.TypedRateLimiter[any], name string, handler ItemH
 
 // Enqueue enqueues the key in a rate limited fashion
 func (q *Queue) Enqueue(ctx context.Context, key string) {
+	log.G(ctx).Debugf("Start to enqueue %q", key)
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -118,6 +119,7 @@ func (q *Queue) Enqueue(ctx context.Context, key string) {
 
 // EnqueueWithoutRateLimit enqueues the key without a rate limit
 func (q *Queue) EnqueueWithoutRateLimit(ctx context.Context, key string) {
+	log.G(ctx).Debugf("Start to enqueue without rate limit %q", key)
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
