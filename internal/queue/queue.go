@@ -492,6 +492,7 @@ func (q *Queue) handleQueueItemObject(ctx context.Context, qi *queueItem) error 
 	q.ratelimiter.Forget(qi.key)
 	if !qi.redirtiedAt.IsZero() {
 		delay := time.Until(qi.redirtiedAt)
+		log.G(ctx).Debugf("Re-enqueuing pod status update for key: %s with delay: %s", qi.key, delay)
 		newQI := q.insert(ctx, qi.key, qi.redirtiedWithRatelimit, &delay)
 		newQI.addedViaRedirty = true
 	}

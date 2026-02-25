@@ -330,6 +330,7 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	kpod.lastPodStatusUpdateSkipped = false
 	kpod.lastPodStatusReceivedFromProvider = pod
 	kpod.Unlock()
+	log.G(ctx).Debugf("Enqueuing pod status update for key: %s", key)
 	pc.syncPodStatusFromProvider.Enqueue(ctx, key)
 }
 
