@@ -320,6 +320,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 
 	var eventHandler cache.ResourceEventHandler = cache.ResourceEventHandlerFuncs{
 		AddFunc: func(pod any) {
+			enqueuedAt := time.Now()
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "AddFunc")
@@ -328,12 +329,20 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 			if key, err := cache.MetaNamespaceKeyFunc(pod); err != nil {
 				log.G(ctx).Error(err)
 			} else {
+				k8sPod := pod.(*corev1.Pod)
+				log.G(ctx).WithFields(log.Fields{
+					"key":               key,
+					"resourceVersion":   k8sPod.ResourceVersion,
+					"creationTimestamp": k8sPod.CreationTimestamp.Time,
+					"enqueuedAt":        enqueuedAt,
+				}).Debug("Informer AddFunc: enqueuing pod to syncPodsFromKubernetes")
 				ctx = span.WithField(ctx, "key", key)
 				pc.knownPods.Store(key, &knownPod{})
 				pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
+			enqueuedAt := time.Now()
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "UpdateFunc")
@@ -373,11 +382,19 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				kPod.Unlock()
 
 				if podShouldEnqueue(oldPod, newPod) {
+					log.G(ctx).WithFields(log.Fields{
+						"key":                key,
+						"oldResourceVersion": oldPod.ResourceVersion,
+						"newResourceVersion": newPod.ResourceVersion,
+						"deletionTimestamp":  newPod.DeletionTimestamp,
+						"enqueuedAt":         enqueuedAt,
+					}).Debug("Informer UpdateFunc: enqueuing pod to syncPodsFromKubernetes")
 					pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 				}
 			}
 		},
 		DeleteFunc: func(pod any) {
+			enqueuedAt := time.Now()
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "DeleteFunc")
@@ -390,6 +407,11 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				if !ok {
 					return
 				}
+				log.G(ctx).WithFields(log.Fields{
+					"key":             key,
+					"resourceVersion": k8sPod.ResourceVersion,
+					"enqueuedAt":      enqueuedAt,
+				}).Debug("Informer DeleteFunc: enqueuing pod to syncPodsFromKubernetes")
 				ctx = span.WithField(ctx, "key", key)
 				pc.knownPods.Delete(key)
 				pc.syncPodsFromKubernetes.Enqueue(ctx, key)
@@ -511,12 +533,18 @@ func (pc *PodController) SyncPodStatusFromProviderQueueItemsBeingProcessedLen() 
 
 // syncPodFromKubernetesHandler compares the actual state with the desired, and attempts to converge the two.
 func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key string) error {
+	handlerStartTime := time.Now()
 	ctx, span := trace.StartSpan(ctx, "syncPodFromKubernetesHandler")
 	defer span.End()
 
 	// Add the current key as an attribute to the current span.
 	ctx = span.WithField(ctx, "key", key)
-	log.G(ctx).WithField("key", key).Debug("sync handled")
+	log.G(ctx).WithFields(log.Fields{
+		"key":                  key,
+		"handlerStartTime":     handlerStartTime,
+		"syncQueueLen":         pc.syncPodsFromKubernetes.Len(),
+		"syncQueueUnprocessed": pc.syncPodsFromKubernetes.UnprocessedLen(),
+	}).Debug("syncPodFromKubernetesHandler: started processing")
 
 	// Convert the namespace/name string into a distinct namespace and name.
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
@@ -527,7 +555,13 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 	}
 
 	// Get the Pod resource with this namespace/name.
+	listerStartTime := time.Now()
 	pod, err := pc.podsLister.Pods(namespace).Get(name)
+	log.G(ctx).WithFields(log.Fields{
+		"key":            key,
+		"listerDuration": time.Since(listerStartTime).String(),
+		"found":          err == nil,
+	}).Debug("syncPodFromKubernetesHandler: fetched pod from lister")
 	if err != nil {
 		if !errors.IsNotFound(err) {
 			// We've failed to fetch the pod from the lister, but the error is not a 404.
@@ -560,6 +594,14 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 	}
 
 	// At this point we know the Pod resource has either been created or updated (which includes being marked for deletion).
+	log.G(ctx).WithFields(log.Fields{
+		"key":                 key,
+		"resourceVersion":     pod.ResourceVersion,
+		"creationTimestamp":   pod.CreationTimestamp.Time,
+		"deletionTimestamp":   pod.DeletionTimestamp,
+		"phase":               pod.Status.Phase,
+		"totalHandlerElapsed": time.Since(handlerStartTime).String(),
+	}).Debug("syncPodFromKubernetesHandler: about to sync pod in provider")
 	return pc.syncPodInProvider(ctx, pod, key)
 }
 
