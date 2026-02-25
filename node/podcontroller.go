@@ -353,10 +353,23 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 			oldPod := oldObj.(*corev1.Pod)
 			newPod := newObj.(*corev1.Pod)
 
+			// Detect informer resync: during a periodic resync, the informer re-delivers all objects
+			// from its local cache as synthetic Update events where old and new have the same ResourceVersion.
+			isResync := oldPod.ResourceVersion == newPod.ResourceVersion
+
 			// At this point we know that something in .metadata or .spec has changed, so we must proceed to sync the pod.
 			if key, err := cache.MetaNamespaceKeyFunc(newPod); err != nil {
 				log.G(ctx).Error(err)
 			} else {
+				if isResync {
+					log.G(ctx).WithFields(log.Fields{
+						"key":             key,
+						"resourceVersion": newPod.ResourceVersion,
+						"phase":           newPod.Status.Phase,
+						"enqueuedAt":      enqueuedAt,
+					}).Debug("Informer UpdateFunc: triggered by periodic resync (not a real watch event)")
+				}
+
 				ctx = span.WithField(ctx, "key", key)
 				obj, ok := pc.knownPods.Load(key)
 				if !ok {
@@ -389,8 +402,14 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 						"newResourceVersion": newPod.ResourceVersion,
 						"deletionTimestamp":  newPod.DeletionTimestamp,
 						"enqueuedAt":         enqueuedAt,
+						"isResync":           isResync,
 					}).Debug("Informer UpdateFunc: enqueuing pod to syncPodsFromKubernetes")
 					pc.syncPodsFromKubernetes.Enqueue(ctx, key)
+				} else if isResync {
+					log.G(ctx).WithFields(log.Fields{
+						"key":             key,
+						"resourceVersion": newPod.ResourceVersion,
+					}).Debug("Informer UpdateFunc: resync event did not trigger enqueue (pod unchanged)")
 				}
 			}
 		},
